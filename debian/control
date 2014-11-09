@@ -1,0 +1,12 @@
+Source: tinc-itsyndikat
+Section: net
+Priority: optional
+Maintainer: Daniel Gröber <dxld@darkboxed.org>
+Build-Depends: debhelper (>= 9)
+Standards-Version: 3.9.5
+Homepage: https://github.com/DanielG/tinc-itsyndikat
+
+Package: tinc-itsyndikat
+Architecture: all
+Depends: ${misc:Depends}
+Description: tinc configuration creation

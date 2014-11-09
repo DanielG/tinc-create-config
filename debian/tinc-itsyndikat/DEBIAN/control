@@ -1,0 +1,9 @@
+Package: tinc-itsyndikat
+Version: 0.1-1
+Architecture: all
+Maintainer: Daniel Gröber <dxld@darkboxed.org>
+Installed-Size: 4
+Section: net
+Priority: optional
+Homepage: https://github.com/DanielG/tinc-itsyndikat
+Description: tinc configuration creation
