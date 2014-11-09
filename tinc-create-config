@@ -1,8 +1,7 @@
 #!/bin/sh
 
 usage () {
-    echo "Usage: cd /etc/tinc; ssh snowden.it-syndikat.org -- $(basename $0) | sudo tar -x" >&2
-
+    echo "Usage: cd /etc/tinc; ssh snowden.it-syndikat.org -- $(basename $0) --ok | sudo tar -x" >&2
 }
 
 if [ x"$(hostname)" != x"snowden" ]; then
@@ -10,8 +9,7 @@ if [ x"$(hostname)" != x"snowden" ]; then
     exit 1
 fi
 
-if [ -t 0 ]; then
-    echo "$(basename $0): stdin is a tty">&2
+if [ x"$1" != x"--ok" ]; then
     usage
     exit 1
 fi
