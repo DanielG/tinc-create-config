@@ -1,100 +1,257 @@
 #!/bin/sh
-
-usage () {
-    echo "Usage: cd /etc/tinc; ssh snowden.it-syndikat.org -- $(basename $0) --ok | sudo tar -x" >&2
-}
-
-if [ x"$(hostname)" != x"snowden" ]; then
-    usage
-    exit 1
-fi
-
-if [ x"$1" != x"--ok" ]; then
-    usage
-    exit 1
-fi
-
-tmp_dir=$(mktemp -p "${TMPDIR:-/tmp/}" -d tinc-cfg-XXXX) || exit 1
-trap 'rm -rf '"$tmp_dir" 0 2 15
-
-NET=vpn.it-syndikat.org
-
-mkdir -p $tmp_dir/$NET
-
-cp -a /etc/tinc/$NET/hosts $tmp_dir/$NET/
-
-cat > $tmp_dir/$NET/tinc.conf <<EOF
-Name = $(whoami)
-LocalDiscovery = yes
-
-ConnectTo = snowden
-EOF
-
-cat > $tmp_dir/$NET/tinc-up <<EOF
-#!/bin/sh
-ifconfig \$INTERFACE 10.42.$(($(id -u) - 1000 + 1)).1 netmask 255.255.0.0
-EOF
-
-cat > $tmp_dir/$NET/tinc-down <<EOF
-#!/bin/sh
-ifconfig \$INTERFACE down
-EOF
-
-chmod +x $tmp_dir/$NET/tinc-down
-chmod +x $tmp_dir/$NET/tinc-up
-
-cat > $tmp_dir/$NET/finish-setup.sh <<EOF
-#!/bin/sh
 set -e
 
-if [ "\$(id -u)" -eq "0" ] && [ -z "\$SUDO_USER" ]; then
-    echo "finish-setup.sh: Please don't run as root, I'll use sudo.">&2
+VERSION=0.1
+export SHARE_DIR="$(dirname "$0")"
+
+MASTER_NODE=snowden
+MASTER_HOSTNAME=snowden.it-syndikat.org
+NET=vpn.it-syndikat.org
+ADDRESS_PREFIX=10.42
+NETMASK=255.255.0.0
+
+usage () {
+    # Extracting a (potentially) untrusted archive with tar running as root is
+    # at least operationally safe (see the `GNU Tar Manual` Section 2.8.4:
+    # Extracting Archives from Untrusted Sources)
+    #
+    # Also to verify it yourself conduct the following experiment:
+    #
+    #    $ cp -av /bin /tmp/experiment
+    #    $ tar -P -c /tmp/experiment > /tmp/untrusted.tar
+    #    $ rm -rf /tmp/experiment
+    #    $ cd /tmp
+    #    $ tar -xvf untrusted.tar
+    #
+    # The `-P` option preserves the leading `/` in the files being added to the
+    # archive. This will result in files being extracted to /tmp/tmp/experiment,
+    # not /tmp/experiment directly.
+
+    printf "\
+Usage: \n\
+\n\
+- First install the \`tinc' package from your distribution\n\
+\n\
+    # apt-get install tinc || yum install tinc || pacman -S tinc\n\
+\n\
+- Next generate and install our configuration (don't miss the \`ok' argument)\n\
+\n\
+    # ssh $MASTER_HOSTNAME -- $(basename $0) ok > tinc-cfg.tar\n\
+
+- Now inspect tinc-cfg.tar and verify that it doesn't do anything you consider
+  \"evil\", and then:
+
+    # sudo mkdir /etc/tinc && sudo tar -xf tinc-cfg.tar -C /etc/tinc\n\
+\n\
+   Alternatively as a one-liner, if you trust me >:)\n\
+\n\
+d=/etc/tinc; mkdir -p \$d; ssh it-syndikat.org $(basename $0) ok | sudo tar -xC \$d\n\
+\n\
+" >&2
+
+if [ x"$1" = x"long" ]; then
+    printf "Extended Usage: %s [OPTIONS...] COMMAND\n" "$0"
+    printf "\
+*Global Options*\n\
+	-h, --help\n\
+		display this help and exit\n\
+\n\
+	--version\n\
+		Display version information and exit\n\
+\n\
+*Commands*
+\n\
+	allocate-primary, ok (default)\n\
+		Allocate the primary device. This device will be allocatet the\n\
+		address: $ADDRESS_PREFIX.\$((\$UID - 1000)).1\n\
+\n\
+	allocate-secondary IP\n\
+		Allocate a secondary device. This device will be allocate an\n\
+		address in the $ADDRESS_PREFIX.\$((\$UID - 1000)).0/24 range.\n\
+		\`IP' should be a number in the range 2-254 and will be the\n\
+		last octet of the IP-Address of this device. (Streams tar\n\
+		archive containing the configuration to the standard output)\n\
+\n\
+	get-hosts\n\
+		Retrive the \"host\" files of the currently trusted tinc\n\
+		nodes. (Streams tar archive containing the files in the root\n\
+		to the standard output)\n\
+
+\n" >&2
+    printf "To get more help run: %s --help\n" "$0"
+fi
+}
+
+error_local () {
+    printf "\
+\
+$0: Cannot allocate IP here
+
+Please run this script on $MASTER_HOSTNAME, the IP-Address allocation\n\
+is based on your User ID there.\n\
+\n\
+Run \`$0' with \`--local' if you think you know what you are doing.\n"
+
+}
+
+tpl_replace () {
+    echo "s/%$1%/$(eval 'echo "$'"$1"'"')/"
+}
+
+install_tpl () {
+    sed \
+        -e "$(tpl_replace "NET" )" \
+        -e "$(tpl_replace "SN_USER" )" \
+        -e "$(tpl_replace "SN_UID" )" \
+        -e "$(tpl_replace "NODE_NAME" )" \
+        -e "$(tpl_replace "MASTER_NODE" )" \
+        -e "$(tpl_replace "ADDRESS_PREFIX" )" \
+        -e "$(tpl_replace "ADDRESS" )" \
+        -e "$(tpl_replace "NETMASK" )" \
+        < "$SHARE_DIR/config-template/$1" \
+        > "$OUTDIR/$1"
+
+    if [ -x "$SHARE_DIR/config-template/$1" ]; then
+        chmod +x "$OUTDIR/$1"
+    fi
+}
+
+GETOPT_LONG="help,version,ok,local,master:,master-hostname:,net:,address-prefix:"
+GETOPT_SHORT="h"
+
+OPTS=$(getopt \
+    -o "$GETOPT_SHORT" \
+    --long "$GETOPT_LONG" \
+    -n "$(basename "$0")" -- "$@")
+eval set -- "$OPTS"
+
+RUN_LOCALLY=false
+COMMAND=
+ALLOCATE=""
+
+while true; do
+    case "$1" in
+	-h|--help)         usage long; exit; ;;
+	--version)         echo "$VERSION"; exit; ;;
+        --local)           RUN_LOCALLY=true ;;
+        --master)          MASTER_NODE=$2; shift ;;
+        --master-hostname) MASTER_HOSTNAME=$2; shift ;;
+        --net)             NET=$2; shift ;;
+        --address-prefix)  ADDRESS_PREFIX=$2; shift ;;
+        --octet)           OCTET=$2; shift ;;
+
+        --) shift; break ;;
+        *) echo "Error parsing argument: $1">&2; exit 1 ;;
+    esac
+    shift
+done
+
+case "$1" in
+    ok|allocate-primary) COMMAND=allocate; ALLOCATE=1 ;;
+    allocate-seconadry)  COMMAND=allocate; ALLOCATE="$2" ;;
+    get-hosts)           COMMAND=get-hosts ;;
+esac
+
+if ! echo "$(hostname)" | grep -q "^$MASTER_HOSTNAME" && ! $RUN_LOCALLY; then
+    error_local
     exit 1
-elif [ -z "\$SUDO_USER" ]; then
-    exec sudo "\$0"
 fi
 
-D=\$(pwd)
-
-cd \$(dirname "\$0")
-
-if [ ! -e hosts/$(whoami) ]; then
-    tincd -K -n $NET </dev/null
-    chmod 644 hosts/$(whoami)
-    ( echo "Subnet = 10.42.$(($(id -u) - 1000 + 1)).0/24";
-      cat hosts/$(whoami)
-    ) > hosts/$(whoami)_
-    mv hosts/$(whoami)_ hosts/$(whoami)
+if [ -z "$COMMAND" ]; then
+    usage short
+    exit 1
 fi
 
-if ! id tinc >/dev/null 2>&1; then
-    adduser --system --home /etc/tinc tinc
-fi
+TMP_DIR=$(mktemp -p "${TMPDIR:-/tmp/}" -d tinc-cfg-XXXX) || exit 1
+trap 'rm -rf '"$TMP_DIR" 0 2 15
 
-echo "EXTRA=\"-U tinc\"" > /etc/default/tinc
-echo "$NET" >> /etc/tinc/nets.boot
-cat /etc/tinc/nets.boot | sort | uniq > /etc/tinc/nets.boot_
-mv /etc/tinc/nets.boot_  /etc/tinc/nets.boot
+case "$COMMAND" in
+    get-hosts)
+        # TODO: Maybe check permissions to make sure root approves of these
+        # files?
 
-echo "finish-setup.sh: copying tinc public key to snowden"
-sudo -u \$SUDO_USER -- scp hosts/$(whoami) $(whoami)@snowden.it-syndikat.org:/srv/tinc-requests
+        cp /etc/tinc/$NET/hosts/* $TMP_DIR
 
-echo
-echo "finish-setup.sh: Done, removing myself ($0)"
+        tar -c \
+            --exclude-backups \
+            --owner=0 --group=0 \
+            -C $TMP_DIR \
+            .
+        ;;
 
-cd \$D
-rm "\$0"
-EOF
-chmod +x $tmp_dir/$NET/finish-setup.sh
+    allocate)
+        # template vars
+        SN_USER=$(whoami)
+        SN_UID=$(id -u)
+        NODE_NAME=$SN_USER
 
-tar -c --exclude-backups -C $tmp_dir $NET
+        if [ -z "$OCTET" ]; then
+            OCTET=$(( ${SN_UID} - 1000 + 1 ))
+        fi
 
+        ADDRESS=${ADDRESS_PREFIX}.${OCTET}.${ALLOCATE}
 
-printf "\
-Now extract $(dirname $0)/tinc-config-$(whoami).tar to your machine and run:
+        OUTDIR="$TMP_DIR/$NET"
 
-   $ apt-get install tinc
-   $ cd /etc/tinc
-   $ tar -xf /path/to/tinc-config-$(whoami).tar
-   $ sudo ./$NET/finish-setup.sh
-"
+        if [ $(( ${SN_UID} - 1000 + 1 )) -gt 254 ]; then
+            echo "Error: User UID too high (max 1255)"
+            exit 1
+        fi
+
+        mkdir -p $OUTDIR
+
+        cp -r /etc/tinc/$NET/hosts $OUTDIR/
+
+        install_tpl tinc.conf
+        install_tpl tinc-up
+        install_tpl tinc-down
+        install_tpl tinc-finish-setup.sh
+
+        tar -c \
+            --exclude-backups \
+            --owner=0 --group=0 \
+            -C $TMP_DIR \
+            $NET
+
+        # More instructions
+        printf "
+To finish the setup run:
+
+    # /etc/tinc/$NET/tinc-finish-setup.sh
+
+This script unfortunately requires root as it has to create a new system
+user. Alternatively you can do the following manually:
+
+- Create a new user that \`tincd' will run as, let's call him \`tinc'
+
+- Add the line \`EXTRA=\"-U tinc\"' to /etc/default/tinc if you're on debian or
+  find a way to add \`-U tinc' to the options your init system runs tincd
+  with.\n\a
+\n\
+- Make sure tincd is started by your init system and add $NET to the nets to start at boot.
+\n\
+    - On Debian/Ubuntu:\n\
+        # echo \"$NET\" >> /etc/tinc/nets.boot\n\
+\n\
+    - On Arch (and possibly other systemd based distros):\n\
+        # systemctl enable tincd@vpn.it-syndikat.org\n\
+\n\
+- Now this will generate, install and submit your keypair:\n\
+\n\
+    # /etc/tinc/$NET/tinc-finish-setup.sh --no-root
+\n\
+" >&2
+
+        # tar ignores this
+        printf "\n--- WARNING WARNING WARNING WARNING WARNING ----\n\n"
+        printf "\
+If you're seeing this you should pipe the output of this program into \`tar -x'
+as instructed by \`$0 --help'.\n\
+\n\
+Otherwise the instructions above won't work!\n"
+        printf "\n---- WARNING WARNING WARNING WARNING WARNING ----\n\n"
+
+        ;;
+esac
+
+rm -rf "$TMP_DIR"
