@@ -3,12 +3,13 @@ set -e
 
 VERSION=0.1
 export SHARE_DIR="$(dirname "$0")"
-
-MASTER_NODE=snowden
-MASTER_HOSTNAME=snowden.it-syndikat.org
 NET=vpn.it-syndikat.org
 ADDRESS_PREFIX=10.42
 NETMASK=255.255.0.0
+MASTER_NODE=snowden
+MASTER_HOSTNAME=snowden
+MASTER_HOST_DOMAIN=syndikat.org
+MASTER_HOST_FQDN=${MASTER_HOSTNAME}.${MASTER_HOST_DOMAIN}
 
 usage () {
     # Extracting a (potentially) untrusted archive with tar running as root is
@@ -36,7 +37,7 @@ Usage: \n\
 \n\
 - Next generate and install our configuration (don't miss the \`ok' argument)\n\
 \n\
-    # ssh $MASTER_HOSTNAME -- $(basename $0) ok > tinc-cfg.tar\n\
+    # ssh $MASTER_HOST_FQDN -- $(basename $0) ok > tinc-cfg.tar\n\
 
 - Now inspect tinc-cfg.tar and verify that it doesn't do anything you consider
   \"evil\", and then:
@@ -45,7 +46,7 @@ Usage: \n\
 \n\
    Alternatively as a one-liner, if you trust me >:)\n\
 \n\
-d=/etc/tinc; mkdir -p \$d; ssh it-syndikat.org $(basename $0) ok | sudo tar -xC \$d\n\
+d=/etc/tinc; sudo mkdir -p \$d; ssh $MASTER_HOST_FQDN $(basename $0) ok | sudo tar -xC \$d\n\
 \n\
 " >&2
 
@@ -87,7 +88,7 @@ error_local () {
 \
 $0: Cannot allocate IP here
 
-Please run this script on $MASTER_HOSTNAME, the IP-Address allocation\n\
+Please run this script on $MASTER_HOST_FQDN, the IP-Address allocation\n\
 is based on your User ID there.\n\
 \n\
 Run \`$0' with \`--local' if you think you know what you are doing.\n"
@@ -106,6 +107,7 @@ install_tpl () {
         -e "$(tpl_replace "NODE_NAME" )" \
         -e "$(tpl_replace "MASTER_NODE" )" \
         -e "$(tpl_replace "ADDRESS_PREFIX" )" \
+        -e "$(tpl_replace "OCTET" )" \
         -e "$(tpl_replace "ADDRESS" )" \
         -e "$(tpl_replace "NETMASK" )" \
         < "$SHARE_DIR/config-template/$1" \
@@ -217,7 +219,7 @@ case "$COMMAND" in
         printf "
 To finish the setup run:
 
-    # /etc/tinc/$NET/tinc-finish-setup.sh
+    # sudo /etc/tinc/$NET/tinc-finish-setup.sh
 
 This script unfortunately requires root as it has to create a new system
 user. Alternatively you can do the following manually:

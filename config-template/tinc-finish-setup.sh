@@ -2,6 +2,8 @@
 set -e
 
 NET="%NET%"
+ADDRESS_PREFIX="%ADDRESS_PREFIX%"
+OCTET="%OCTET%"
 SN_USER="%SN_USER%"
 SN_UID="%SN_USER%"
 
@@ -18,7 +20,7 @@ choice () {
             exit 1
         fi
 
-        if echo "$tmp" | grep -iq '^'"$2"'$'
+        if echo "$tmp" | grep -Eiq '^'"$2"'$'
         then
             eval "${3}=\"$(echo "$tmp" | tr '[:upper:]' '[:lower:]')\""
             return 0
@@ -29,22 +31,17 @@ choice () {
 
 }
 
-#
-# Non root bits
-#
 cd $(dirname "$0")
 
 if [ ! -e hosts/$SN_USER ]; then
     tincd -K 4096 -n $NET </dev/null
     chmod 644 hosts/$SN_USER
-    ( echo "Subnet = %ADDRESS_PREFIX%.$(($SN_UID - 1000 + 1)).0/24";
+    ( echo "Subnet = ${ADDRESS_PREFIX}.${OCTET}.0/24";
       cat hosts/$SN_USER
     ) > hosts/${SN_USER}_
     mv hosts/${SN_USER}_ hosts/$SN_USER
 fi
 
-
-if [ x"$1" = "--no-root" ]; then
 
 #
 # These bits need root
@@ -56,16 +53,14 @@ then
     exit 1
 fi
 
-if -z "$TINC_USER"; then
+if [ -z "$TINC_USER" ]; then
     TINC_USER=tinc
 fi
 
-
 if ! id $TINC_USER >/dev/null 2>&1; then
-    echo "Creating tinc daemon user, this will prompt you for your sudo password...">&2
-    sudo adduser --no-create-home --system --home /etc/tinc tinc
+    echo "Creating tinc daemon user...">&2
+    adduser --no-create-home --system --home /etc/tinc tinc
 fi
-
 
 echo "Setting user via /etc/default/tinc">&2
 if [ -e /etc/default/tinc ]; then
@@ -84,14 +79,12 @@ case "$DISTRO" in
         ;;
 
     arch)
-        echo "on arch -> systemctl enable tincd@vpn.it-syndikat.org"
-        systemctl enable tincd@vpn.it-syndikat.org
+        echo "on arch -> systemctl enable tincd@$NET"
+        systemctl enable tincd@"$NET"
         ;;
     *)
 
         printf "\
-Unknown distribution, cannot ensure tincd will run on startup and handle\n\
-vpn.it-syndikat.org net. Please do this manually."
+WARNING: Unknown distribution, cannot ensure tincd will run on startup and\n\
+handle the $NET net. Please do this manually."
 esac
-
-fi
